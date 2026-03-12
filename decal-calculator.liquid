@@ -1,0 +1,260 @@
+{% comment %} 
+  Bridge Shopify Metafields to JavaScript 
+{% endcomment %}
+<script>
+  window.shapeLibrary = {
+    diamond: "M 50 0 L 100 50 L 50 100 L 0 50 Z",
+    circle: "M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0",
+    square: "M 0 0 H 100 V 100 H 0 Z"
+  };
+
+  window.productConfig = {
+    style: "{{ product.metafields.custom.display_style | default: 'grid' }}",
+    shape: "{{ product.metafields.custom.decal_shape | default: 'diamond' }}", 
+    path: `{{ product.metafields.custom.silhouette_path }}`, 
+    avgSize: {{ product.metafields.custom.average_size | default: 1.25 }},
+    perEnvelope: {{ product.metafields.custom.decal_count | default: 1 }}
+  };
+</script>
+
+<style>
+  .dc-container { font-family: sans-serif; color: #1e293b; padding: 10px; }
+  .dc-grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
+  @media (min-width: 1024px) { .dc-grid { grid-template-columns: 320px 1fr; } }
+  .dc-card { background: #ffffff; padding: 24px; border-radius: 12px; border: 1px solid #e2e8f0; }
+  .dc-header-stat { background: #1e293b; color: white; padding: 24px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .dc-label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #64748b; }
+  .dc-input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .dc-input-wrapper { position: relative; }
+  .dc-input-wrapper input { width: 100%; padding: 12px 10px 12px 35px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 16px; }
+  .dc-input-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-weight: bold; }
+  .dc-info-badge { background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 8px; font-size: 14px; color: #475569; }
+  .dc-viz-box { background: white; border: 1px solid #e2e8f0; border-radius: 12px; display: flex; align-items: center; justify-content: center;}
+  .dc-btn-toggle { width: 100%; background: #eff6ff; color: #2563eb; border: 1px solid #dbeafe; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-bottom: 8px; text-align: left; transition: 0.2s; }
+  .dc-btn-toggle.off { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+  .hidden { display: none; }
+</style>
+
+<div class="dc-container">
+  <div class="dc-grid">
+    <div class="dc-sidebar">
+      <div class="dc-card">
+        <h3 style="margin-top:0; margin-bottom: 20px;">Settings</h3>
+        <div class="dc-input-group" style="margin-bottom: 20px;">
+          <label class="dc-label">Window Size (Inches)</label>
+          <div class="dc-input-row">
+            <div class="dc-input-wrapper"><span class="dc-input-icon">W</span><input type="number" id="windowWidth" value="36"></div>
+            <div class="dc-input-wrapper"><span class="dc-input-icon">H</span><input type="number" id="windowHeight" value="24"></div>
+          </div>
+        </div>
+        <div class="dc-input-group" style="margin-bottom: 20px;">
+          <label class="dc-label">Decal Size</label>
+          <div class="dc-info-badge">
+            <svg width="20" height="20" viewBox="0 0 100 100" style="flex-shrink: 0;"><path id="shape-icon-path" d="" fill="#bfdbfe" stroke="#2563eb" stroke-width="8"/></svg>
+            <span>Uses <strong>{{ product.metafields.custom.average_size }}in</strong> decals.</span>
+          </div>
+        </div>
+        <div class="dc-input-group">
+          <label class="dc-label">Options</label>
+          <button type="button" class="dc-btn-toggle" onclick="toggleMargin()" id="btn-margin">
+                Margins (2") <span id="m-status">ON</span></button>
+          <button type="button" class="dc-btn-toggle" onclick="toggleGapMode()" id="btn-gap">Spacing: <span id="g-status">Recommended</span></button>
+          <div id="custom-gap-fields" class="dc-input-row hidden">
+            <div class="dc-input-wrapper"><span class="dc-input-icon">X</span><input type="number" id="spacingX" value="2"></div>
+            <div class="dc-input-wrapper"><span class="dc-input-icon">Y</span><input type="number" id="spacingY" value="4"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dc-main">
+      <div class="dc-header-stat">
+            <div>
+                <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; margin-bottom: 4px;">Decal Sheets Needed</div>
+                    <div style="display: flex; align-items: baseline; gap: 12px;">
+                        <div style="font-size: 48px; font-weight: bold; line-height: 1;" id="result-envelopes">0</div>
+                        <div style="font-size: 16px; color: #94a3b8; margin-bottom: 4px;">(<span id="result-total">0</span> total decals)</div>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 12px; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px;">Pattern Layout</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #ffffff;">
+                        <span id="result-cols">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">cols</span> × 
+                        <span id="result-rows">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">rows</span>
+                    </div>
+                </div>
+            </div>
+      <div class="dc-viz-box" id="visualizer-container"></div>
+    </div>
+  </div>
+</div>  
+
+<script>
+// Use a namespace to avoid conflicts
+window.dcCalc = {
+    state: { useMargins: true, useRecommendedGap: true },
+    
+    init: function() {
+        const ww = document.getElementById('windowWidth');
+        const wh = document.getElementById('windowHeight');
+        const sx = document.getElementById('spacingX');
+        const sy = document.getElementById('spacingY');
+
+        if(ww) ww.addEventListener('input', () => this.calculate());
+        if(wh) wh.addEventListener('input', () => this.calculate());
+        if(sx) sx.addEventListener('input', () => this.calculate());
+        if(sy) sy.addEventListener('input', () => this.calculate());
+
+        //this.setupModal();
+        this.calculate();
+    },
+
+    setupModal: function() {
+        const modal = document.getElementById('dc-modal');
+        const openBtn = document.getElementById('open-decal-calc');
+        const closeBtn = document.getElementById('close-decal-calc');
+
+        if (openBtn && modal) {
+            openBtn.onclick = (e) => {
+                e.preventDefault();
+                modal.classList.add('is-visible');
+                document.body.style.overflow = 'hidden';
+                this.calculate();
+            };
+        }
+
+        if (closeBtn && modal) {
+            closeBtn.onclick = () => {
+                modal.classList.remove('is-visible');
+                document.body.style.overflow = '';
+            };
+        }
+
+        window.onclick = (e) => {
+            if (e.target === modal) closeBtn.onclick();
+        };
+    },
+
+    calculate: function() {
+    // 1. SELECT ELEMENTS
+    const wwInput = document.getElementById('windowWidth');
+    const whInput = document.getElementById('windowHeight');
+    if (!wwInput || !whInput) return; // Safety check
+
+    const wwVal = parseFloat(wwInput.value) || 0;
+    const whVal = parseFloat(whInput.value) || 0;
+    const dDim = parseFloat(window.productConfig.avgSize) || 1.25;
+    
+    const sx = this.state.useRecommendedGap ? 2 : (parseFloat(document.getElementById('spacingX').value) || 0);
+    const sy = this.state.useRecommendedGap ? 4 : (parseFloat(document.getElementById('spacingY').value) || 0);
+
+    // 2. ICON SYNC (Moved to top so it runs even if math below fails)
+    let drawPath = window.productConfig.path;
+    if (!drawPath || drawPath.trim() === "") {
+        drawPath = window.shapeLibrary[window.productConfig.shape] || window.shapeLibrary.diamond;
+    }
+    const iconPath = document.getElementById('shape-icon-path');
+    if (iconPath) iconPath.setAttribute('d', drawPath);
+
+    // 3. SMART BUFFER (Margins ON = 2", OFF = 0.5")
+    let bufferW = this.state.useMargins ? 2 : 0.5;
+    let bufferH = this.state.useMargins ? 2 : 0.5;
+
+    // Prevents breaking on tiny windows
+    if (wwVal < (dDim + (bufferW * 2))) bufferW = 0.25;
+    if (whVal < (dDim + (bufferH * 2))) bufferH = 0.25;
+
+    // 4. CALCULATE FIT
+    const fCols = Math.max(0, Math.floor((wwVal - (bufferW * 2) - dDim) / (dDim + sx)) + 1);
+    const fRows = Math.max(0, Math.floor((whVal - (bufferH * 2) - dDim) / (dDim + sy)) + 1);
+    const count = fCols * fRows;
+
+    // 5. PERFECT CENTERING MATH
+    const totalContentW = (fCols > 0) ? (fCols * dDim) + ((fCols - 1) * sx) : 0;
+    const totalContentH = (fRows > 0) ? (fRows * dDim) + ((fRows - 1) * sy) : 0;
+    
+    const startX = (wwVal - totalContentW) / 2;
+    const startY = (whVal - totalContentH) / 2;
+
+    // 6. UPDATE UI
+    document.getElementById('result-total').innerText = count;
+    document.getElementById('result-envelopes').innerText = Math.ceil(count / window.productConfig.perEnvelope);
+    document.getElementById('result-cols').innerText = fCols;
+    document.getElementById('result-rows').innerText = fRows;
+
+    // 7. CALL RENDER (Match variables carefully)
+    this.render(fCols, fRows, dDim, sx, sy, startX, startY, wwVal, whVal, drawPath);
+},
+
+    render: function(cols, rows, dW, spX, spY, sX, sY, w, h, path) {
+        // 1. THE SCALE FIX
+        const MAX = 400; 
+        const sc = (w / h > 1 ? MAX : MAX * (w / h)) / w;
+        const svgW = w * sc;
+        const svgH = h * sc;
+        
+        // 2. MULTI-PATH LOGIC
+        // We split by '|'. If there is no '|', the array just has 1 item.
+        const pathArray = path.split('|'); 
+        let shapes = '';
+        let leafCounter = 0;
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                let x = (sX + c * (dW + spX)) * sc;
+                let y = (sY + r * (dW + spY)) * sc;
+                
+                // Cycle through paths in the array
+                let currentPath = pathArray[leafCounter % pathArray.length].trim();
+                
+                shapes += `<g transform="translate(${x},${y}) scale(${(dW * sc) / 100})">
+                            <path d="${currentPath}" fill="#bfdbfe" stroke="#2563eb" stroke-width="2"/>
+                           </g>`;
+                
+                leafCounter++;
+            }
+        }
+      
+        // 3. THE DRAWING
+        const container = document.getElementById('visualizer-container');
+        if (container) {
+          container.innerHTML = `
+            <svg width="100%" height="100%" viewBox="-80 -80 ${svgW + 160} ${svgH + 160}" style="max-height:450px;">
+              <defs>
+                <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
+                  <path d="M0,0 L8,4 L0,8 L2,4 Z" fill="#94a3b8" />
+                </marker>
+              </defs>
+              <rect width="${svgW}" height="${svgH}" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" />
+              
+              <g>${shapes}</g>
+              
+              <line x1="0" y1="-35" x2="${svgW}" y2="-35" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
+              <text x="${svgW / 2}" y="-45" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b">${w}in</text>
+              
+              <line x1="-35" y1="0" x2="-35" y2="${svgH}" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
+              <text x="-45" y="${svgH / 2}" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b" transform="rotate(-90,-45,${svgH / 2})">${h}in</text>
+            </svg>`;
+        }
+    }
+};
+
+// Toggle functions outside namespace for HTML onclicks
+window.toggleMargin = function() {
+    window.dcCalc.state.useMargins = !window.dcCalc.state.useMargins;
+    document.getElementById('btn-margin').classList.toggle('off', !window.dcCalc.state.useMargins);
+    document.getElementById('m-status').innerText = window.dcCalc.state.useMargins ? 'ON' : 'OFF';
+    window.dcCalc.calculate();
+};
+
+window.toggleGapMode = function() {
+    window.dcCalc.state.useRecommendedGap = !window.dcCalc.state.useRecommendedGap;
+    document.getElementById('btn-gap').classList.toggle('off', !window.dcCalc.state.useRecommendedGap);
+    document.getElementById('g-status').innerText = window.dcCalc.state.useRecommendedGap ? 'Recommended' : 'Custom';
+    document.getElementById('custom-gap-fields').classList.toggle('hidden', window.dcCalc.state.useRecommendedGap);
+    window.dcCalc.calculate();
+};
+
+// Initialize everything when the DOM is ready
+document.addEventListener('DOMContentLoaded', () => window.dcCalc.init());
+</script>

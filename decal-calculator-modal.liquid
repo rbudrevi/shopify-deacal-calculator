@@ -1,0 +1,101 @@
+<style>
+.dc-trigger {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  color:#2563eb;
+  text-decoration:underline;
+  font-size:15px;
+  font-weight:500;
+  cursor:pointer;
+  padding:8px 0;
+}
+
+.dc-modal-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.5);
+  z-index:9999;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:20px;
+}
+
+.dc-modal-overlay.is-visible{
+  display:flex;
+}
+
+.dc-modal-content{
+  background:#fff;
+  width:100%;
+  max-width:900px;
+  max-height:90vh;
+  border-radius:16px;
+  overflow-y:auto;
+  padding:20px;
+  position:relative;
+}
+
+.dc-close-x{
+  position:absolute;
+  top:12px;
+  right:12px;
+  font-size:22px;
+  border:none;
+  background:none;
+  cursor:pointer;
+}
+</style>
+
+<div id="dc-modal" class="dc-modal-overlay">
+  <div class="dc-modal-content">
+    <button class="dc-close-x" id="close-decal-calc">&times;</button>
+
+    <div style="margin-bottom: 20px;">
+      <h2 style="margin:0; font-size: 20px;">Quantity Estimator</h2>
+      <p style="margin:5px 0 0; font-size: 14px; color: #64748b;">
+        For: {{ product.title }}
+      </p>
+    </div>
+
+    {% render 'decal-calculator' %}
+  </div>
+</div>
+
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+
+  const openBtn = document.getElementById('open-decal-calc');
+  const closeBtn = document.getElementById('close-decal-calc');
+  const modal = document.getElementById('dc-modal');
+
+  if (!openBtn || !closeBtn || !modal) return;
+
+  function openModal(e){
+    e.preventDefault();
+    modal.classList.add('is-visible');
+    modal.setAttribute('aria-hidden','false');
+  }
+
+  function closeModal(){
+    modal.classList.remove('is-visible');
+    modal.setAttribute('aria-hidden','true');
+  }
+
+  openBtn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+
+  modal.addEventListener('click',(e)=>{
+    if(e.target === modal) closeModal();
+  });
+
+  document.addEventListener('keydown',(e)=>{
+    if(e.key === 'Escape' && modal.classList.contains('is-visible')){
+      closeModal();
+    }
+  });
+
+});
+</script>
