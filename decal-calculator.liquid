@@ -105,6 +105,10 @@ window.dcCalc = {
         if(sx) sx.addEventListener('input', () => this.calculate());
         if(sy) sy.addEventListener('input', () => this.calculate());
 
+        const sizeLabel = document.getElementById('dc-decal-size');
+        if (sizeLabel) {
+          sizeLabel.textContent = `${window.productConfig.avgSize}in`;
+        }
         //this.setupModal();
         this.calculate();
     },
