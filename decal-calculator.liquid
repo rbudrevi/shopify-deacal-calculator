@@ -51,7 +51,7 @@
           <label class="dc-label">Decal Size</label>
           <div class="dc-info-badge">
             <svg width="20" height="20" viewBox="0 0 100 100" style="flex-shrink: 0;"><path id="shape-icon-path" d="" fill="#bfdbfe" stroke="#2563eb" stroke-width="8"/></svg>
-            <span>Uses <strong id="dc-decal-size"></strong> decals.</span>
+            <span>Uses <strong>{{ product.metafields.custom.average_size }}in</strong> decals.</span>
           </div>
         </div>
         <div class="dc-input-group">
@@ -105,10 +105,6 @@ window.dcCalc = {
         if(sx) sx.addEventListener('input', () => this.calculate());
         if(sy) sy.addEventListener('input', () => this.calculate());
 
-        const sizeLabel = document.getElementById('dc-decal-size');
-        if (sizeLabel) {
-          sizeLabel.textContent = `${window.productConfig.avgSize}in`;
-        }
         //this.setupModal();
         this.calculate();
     },
