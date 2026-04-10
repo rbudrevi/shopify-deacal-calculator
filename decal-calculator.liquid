@@ -1,260 +1,621 @@
-{% comment %} 
-  Bridge Shopify Metafields to JavaScript 
+{% comment %}
+  ============================================================
+  SNIPPET: decal-calculator
+  PURPOSE: Renders the quantity estimator UI — window size inputs,
+           spacing tier selector, SVG visualizer, and result stats.
+  RENDERED BY: decal-calculator-modal (inside the modal shell)
+
+  METAFIELD RESOLUTION ORDER:
+    1. Current product's own metafields (custom namespace)
+    2. If custom.core_product is set (Product reference metafield),
+       follow that link and read metafields from the linked product
+    3. If still missing, fall back to hardcoded defaults
+
+  METAFIELDS (namespace: custom):
+    On the variant listing product:
+    - core_product      {Product ref}  Link to the core product with decal info
+
+    On the core product (or directly on the product if no variants):
+    - average_size      {Number}  Decal size in inches (e.g. 1.25)
+    - decal_count       {Number}  Decals per sheet/envelope (e.g. 10)
+    - decal_shape       {String}  Fallback shape: 'diamond', 'circle', or 'square'
+    - silhouette_path   {String}  SVG path data. Pipe-separate multiple paths for
+                                  alternating shapes (e.g. "M 0 0 H 100|M 50 0 L 100 50")
+    - display_style     {String}  Reserved for future layout variants (default: 'grid')
+  ============================================================
 {% endcomment %}
+
+{%- comment -%}
+  Resolve the initial metafield source for the selected (or first) variant.
+  - If the selected variant's product has a core_product reference, use that
+  - Otherwise fall back to the current product's own metafields
+  dc_source is used for the initial productConfig below.
+  The full per-variant map is output separately for JS runtime switching.
+{%- endcomment -%}
+{%- assign dc_selected = product.selected_or_first_available_variant -%}
+{%- assign dc_core = dc_selected.metafields.custom.core_product.value -%}
+{%- if dc_core != blank -%}
+  {%- assign dc_source = dc_core -%}
+{%- else -%}
+  {%- assign dc_core = product.metafields.custom.core_product.value -%}
+  {%- if dc_core != blank -%}
+    {%- assign dc_source = dc_core -%}
+  {%- else -%}
+    {%- assign dc_source = product -%}
+  {%- endif -%}
+{%- endif -%}
+
+{% comment %} --- Bridge resolved metafields to JavaScript --- {% endcomment %}
 <script>
+  // Built-in fallback shape paths (used when no silhouette_path metafield is set)
   window.shapeLibrary = {
     diamond: "M 50 0 L 100 50 L 50 100 L 0 50 Z",
-    circle: "M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0",
-    square: "M 0 0 H 100 V 100 H 0 Z"
+    circle:  "M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0",
+    square:  "M 0 0 H 100 V 100 H 0 Z"
   };
 
-  window.productConfig = {
-    style: "{{ product.metafields.custom.display_style | default: 'grid' }}",
-    shape: "{{ product.metafields.custom.decal_shape | default: 'diamond' }}", 
-    path: `{{ product.metafields.custom.silhouette_path }}`, 
-    avgSize: {{ product.metafields.custom.average_size | default: 1.25 }},
-    perEnvelope: {{ product.metafields.custom.decal_count | default: 1 }}
+  // Per-variant metafield map — built at render time by Liquid.
+  // Each variant resolves its own core_product chain so different variants
+  // can point to different core products with different decal configs.
+  // JS uses this map to update productConfig when the variant changes.
+  window.dcVariantConfigs = {
+    {%- for variant in product.variants -%}
+      {%- assign v_core = variant.metafields.custom.core_product.value -%}
+      {%- if v_core != blank -%}
+        {%- assign v_source = v_core -%}
+      {%- else -%}
+        {%- assign p_core = product.metafields.custom.core_product.value -%}
+        {%- if p_core != blank -%}
+          {%- assign v_source = p_core -%}
+        {%- else -%}
+          {%- assign v_source = product -%}
+        {%- endif -%}
+      {%- endif -%}
+      "{{ variant.id }}": {
+        style:       "{{ v_source.metafields.custom.display_style | default: 'grid' }}",
+        shape:       "{{ v_source.metafields.custom.decal_shape | default: 'diamond' }}",
+        path:        "{{ v_source.metafields.custom.silhouette_path | default: '' }}",
+        avgSize:     {{ v_source.metafields.custom.average_size | default: 1.25 }},
+        perEnvelope: {{ v_source.metafields.custom.decal_count | default: 1 }}
+      }{% unless forloop.last %},{% endunless %}
+    {%- endfor -%}
   };
+
+  // Initial productConfig — set from the selected/first variant's resolved source.
+  // Overwritten by dcUpdateConfigForVariant() whenever the variant changes.
+  window.productConfig = {
+    style:        "{{ dc_source.metafields.custom.display_style | default: 'grid' }}",
+    shape:        "{{ dc_source.metafields.custom.decal_shape | default: 'diamond' }}",
+    path:         "{{ dc_source.metafields.custom.silhouette_path | default: '' }}",
+    avgSize:      {{ dc_source.metafields.custom.average_size | default: 1.25 }},
+    perEnvelope:  {{ dc_source.metafields.custom.decal_count | default: 1 }},
+    // Product identity — always from the current product (not the core), for analytics
+    productId:    {{ product.id }},
+    productTitle: {{ product.title | json }},
+    productUrl:   "{{ shop.url }}{{ product.url }}"
+  };
+
+  // Updates window.productConfig with the metafields for a given variant ID,
+  // then recalculates if the calculator has been initialised.
+  // Called by the variant input watcher below and available globally for
+  // any other theme JS that needs to trigger a config refresh.
+  window.dcUpdateConfigForVariant = function(variantId) {
+    const variantData = window.dcVariantConfigs[String(variantId)];
+    if (!variantData) return; // Unknown variant — keep existing config
+
+    // Merge variant metafields into productConfig, preserving identity fields
+    window.productConfig.style       = variantData.style;
+    window.productConfig.shape       = variantData.shape;
+    window.productConfig.path        = variantData.path || '';
+    window.productConfig.avgSize     = variantData.avgSize;
+    window.productConfig.perEnvelope = variantData.perEnvelope;
+
+    // Re-render if the calculator is already initialised
+    if (window.dcCalc && typeof window.dcCalc.calculate === 'function') {
+      window.dcCalc.calculate();
+    }
+  };
+
+  // Variant change watching is handled by variant-media-gallery.js,
+  // which calls window.dcUpdateConfigForVariant() whenever the variant input changes.
+  // On initial page load, fire once for the currently selected variant.
+  document.addEventListener('DOMContentLoaded', () => {
+    const input = document.querySelector('form[id^="product-form"] input[name="id"]');
+    if (input) window.dcUpdateConfigForVariant(input.value);
+  });
 </script>
 
 <style>
+  /* ── Layout ── */
   .dc-container { font-family: sans-serif; color: #1e293b; padding: 10px; }
   .dc-grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
-  @media (min-width: 1024px) { .dc-grid { grid-template-columns: 320px 1fr; } }
-  .dc-card { background: #ffffff; padding: 24px; border-radius: 12px; border: 1px solid #e2e8f0; }
-  .dc-header-stat { background: #1e293b; color: white; padding: 24px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  @media (min-width: 1024px) { .dc-grid { grid-template-columns: 360px 1fr; } }
+
+  /* ── Sidebar card ── */
+  .dc-card { background: #ffffff; padding: 12px; border-radius: 12px; border: 1px solid #e2e8f0; }
   .dc-label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #64748b; }
+
+  /* ── Window size inputs ── */
   .dc-input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .dc-input-wrapper { position: relative; }
-  .dc-input-wrapper input { width: 100%; padding: 12px 10px 12px 35px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 16px; }
+  .dc-input-wrapper input { width: 100%; padding: 12px 10px 12px 35px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
   .dc-input-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-weight: bold; }
+
+  /* ── Decal size badge ── */
   .dc-info-badge { background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 8px; font-size: 14px; color: #475569; }
-  .dc-viz-box { background: white; border: 1px solid #e2e8f0; border-radius: 12px; display: flex; align-items: center; justify-content: center;}
-  .dc-btn-toggle { width: 100%; background: #eff6ff; color: #2563eb; border: 1px solid #dbeafe; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-bottom: 8px; text-align: left; transition: 0.2s; }
+
+  /* ── Margin toggle button ── */
+  .dc-btn-toggle { width: 100%; background: #eff6ff; color: #2563eb; border: 1px solid #dbeafe; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-bottom: 16px; text-align: left; transition: background 0.2s, color 0.2s; }
   .dc-btn-toggle.off { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+
+  /* ── Spacing tier cards ── */
+  .dc-tier-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .dc-tier-card {
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 10px 8px;
+    cursor: pointer;
+    text-align: center;
+    background: #fff;
+    transition: border-color 0.2s, background 0.2s;
+    user-select: none;
+  }
+  .dc-tier-card:hover { border-color: #93c5fd; background: #f8fafc; }
+
+  /* Active state — blue for standard tiers */
+  .dc-tier-card.is-active { border-color: #2563eb; background: #eff6ff; }
+
+  /* Optimal card — gold accent when active */
+  .dc-tier-card--optimal.is-active { border-color: #f59e0b; background: #fffbeb; }
+
+  .dc-tier-name {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #2563eb;
+    margin-bottom: 4px;
+  }
+  .dc-tier-card--optimal .dc-tier-name { color: #d97706; }
+
+  .dc-tier-value {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 4px;
+  }
+  .dc-tier-desc {
+    font-size: 11px;
+    color: #64748b;
+    line-height: 1.35;
+  }
+
+  /* Gold star badge on Optimal */
+  .dc-tier-star {
+    display: inline-block;
+    color: #f59e0b;
+    font-size: 13px;
+    margin-left: 2px;
+    vertical-align: middle;
+  }
+
+  /* ABC footnote below tier cards */
+  .dc-tier-footnote {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 10px;
+    line-height: 1.5;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .dc-tier-footnote-star { color: #f59e0b; flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Results header ── */
+  .dc-header-stat { background: #1e293b; color: white; padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+
+  /* ── Visualizer ── */
+  .dc-viz-box { background: white; border: 1px solid #e2e8f0; border-radius: 12px; display: flex; align-items: center; justify-content: center; }
+
+  /* ── Simulation caption bar (below visualizer) ── */
+  .dc-sim-caption {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #475569;
+    flex-wrap: wrap;
+  }
+  .dc-sim-caption-item { display: flex; align-items: center; gap: 6px; }
+  .dc-sim-caption-divider { width: 1px; height: 16px; background: #cbd5e1; flex-shrink: 0; }
+
   .hidden { display: none; }
 </style>
 
 <div class="dc-container">
   <div class="dc-grid">
+
+    <!-- ░░ SIDEBAR — inputs & options ░░ -->
     <div class="dc-sidebar">
       <div class="dc-card">
-        <h3 style="margin-top:0; margin-bottom: 20px;">Settings</h3>
+        <h3 style="margin-top:0; margin-bottom: 16px;">Settings</h3>
+
+        <!-- Window size -->
         <div class="dc-input-group" style="margin-bottom: 20px;">
           <label class="dc-label">Window Size (Inches)</label>
           <div class="dc-input-row">
-            <div class="dc-input-wrapper"><span class="dc-input-icon">W</span><input type="number" id="windowWidth" value="36"></div>
-            <div class="dc-input-wrapper"><span class="dc-input-icon">H</span><input type="number" id="windowHeight" value="24"></div>
+            <div class="dc-input-wrapper">
+              <span class="dc-input-icon">W</span>
+              <input type="number" id="windowWidth" value="36" min="1">
+            </div>
+            <div class="dc-input-wrapper">
+              <span class="dc-input-icon">H</span>
+              <input type="number" id="windowHeight" value="24" min="1">
+            </div>
           </div>
         </div>
-        <div class="dc-input-group" style="margin-bottom: 20px;">
-          <label class="dc-label">Decal Size</label>
-          <div class="dc-info-badge">
-            <svg width="20" height="20" viewBox="0 0 100 100" style="flex-shrink: 0;"><path id="shape-icon-path" d="" fill="#bfdbfe" stroke="#2563eb" stroke-width="8"/></svg>
-            <span>Uses <strong>{{ product.metafields.custom.average_size }}in</strong> decals.</span>
-          </div>
+
+        <!-- Margin toggle -->
+        <div class="dc-input-group" style="margin-bottom: 6px;">
+          <label class="dc-label">Margins</label>
+          <button type="button" class="dc-btn-toggle" onclick="window.dcToggleMargin()" id="btn-margin">
+            Edge margins (2") <span id="m-status">ON</span>
+          </button>
         </div>
+
+        <!-- Spacing tier selector -->
         <div class="dc-input-group">
-          <label class="dc-label">Options</label>
-          <button type="button" class="dc-btn-toggle" onclick="toggleMargin()" id="btn-margin">
-                Margins (2") <span id="m-status">ON</span></button>
-          <button type="button" class="dc-btn-toggle" onclick="toggleGapMode()" id="btn-gap">Spacing: <span id="g-status">Recommended</span></button>
-          <div id="custom-gap-fields" class="dc-input-row hidden">
-            <div class="dc-input-wrapper"><span class="dc-input-icon">X</span><input type="number" id="spacingX" value="2"></div>
-            <div class="dc-input-wrapper"><span class="dc-input-icon">Y</span><input type="number" id="spacingY" value="4"></div>
+          <label class="dc-label">Decal Spacing</label>
+
+          <div class="dc-tier-grid">
+
+            <!-- STARTER -->
+            <div class="dc-tier-card" id="tier-starter" onclick="window.dcSelectTier('starter')">
+              <div class="dc-tier-name">Starter</div>
+              <div class="dc-tier-value">12" spacing</div>
+              <div class="dc-tier-desc">Best aesthetics. Limited deterrence.</div>
+            </div>
+
+            <!-- ENHANCED -->
+            <div class="dc-tier-card" id="tier-enhanced" onclick="window.dcSelectTier('enhanced')">
+              <div class="dc-tier-name">Enhanced</div>
+              <div class="dc-tier-value">6" spacing</div>
+              <div class="dc-tier-desc">Balance between aesthetics and deterrence.</div>
+            </div>
+
+            <!-- OPTIMAL — recommended, gold accent -->
+            <div class="dc-tier-card dc-tier-card--optimal is-active" id="tier-optimal" onclick="window.dcSelectTier('optimal')">
+              <div class="dc-tier-name">Optimal <span class="dc-tier-star">★</span></div>
+              <div class="dc-tier-value">2"×4" Grid</div>
+              <div class="dc-tier-desc">Significant strike reduction.</div>
+            </div>
+
+          </div>
+
+          <!-- ABC footnote (matches screenshot) -->
+          <div class="dc-tier-footnote">
+            <span class="dc-tier-footnote-star">★</span>
+            <span>In accordance with guidelines from the American Bird Conservancy. 
+              <br> <br> No solution can prevent 100% of collisions. Placement, spacing, and bird behavior all affect outcomes.</span>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /sidebar -->
+
+    <!-- ░░ MAIN — results + visualizer ░░ -->
+    <div class="dc-main">
+
+      <!-- Stats bar -->
+      <div class="dc-header-stat">
+        <div>
+          <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; margin-bottom: 4px;">Decal Sheets Needed</div>
+          <div style="display: flex; align-items: baseline; gap: 12px;">
+            <div style="font-size: 48px; font-weight: bold; line-height: 1;" id="result-envelopes">0</div>
+            <div style="font-size: 16px; color: #94a3b8; margin-bottom: 4px;">(<span id="result-total">0</span> total decals)</div>
+          </div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 12px; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px;">Pattern Layout</div>
+          <div style="font-size: 18px; font-weight: bold; color: #ffffff;">
+            <span id="result-cols">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">cols</span> ×
+            <span id="result-rows">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">rows</span>
           </div>
         </div>
       </div>
-    </div>
 
-    <div class="dc-main">
-      <div class="dc-header-stat">
-            <div>
-                <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; margin-bottom: 4px;">Decal Sheets Needed</div>
-                    <div style="display: flex; align-items: baseline; gap: 12px;">
-                        <div style="font-size: 48px; font-weight: bold; line-height: 1;" id="result-envelopes">0</div>
-                        <div style="font-size: 16px; color: #94a3b8; margin-bottom: 4px;">(<span id="result-total">0</span> total decals)</div>
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 12px; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px;">Pattern Layout</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #ffffff;">
-                        <span id="result-cols">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">cols</span> × 
-                        <span id="result-rows">0</span> <span style="font-size: 14px; font-weight: normal; color: #94a3b8;">rows</span>
-                    </div>
-                </div>
-            </div>
+      <!-- SVG visualizer -->
       <div class="dc-viz-box" id="visualizer-container"></div>
-    </div>
-  </div>
-</div>  
+
+      <!-- Simulation caption — decal size + active spacing, updates on tier change -->
+      <div class="dc-sim-caption">
+        <div class="dc-sim-caption-item">
+          <svg width="16" height="16" viewBox="0 0 100 100" style="flex-shrink:0;">
+            <path id="shape-icon-path" d="" fill="#bfdbfe" stroke="#2563eb" stroke-width="8"/>
+          </svg>
+          <span>Uses <strong>{{ dc_source.metafields.custom.average_size }}in</strong> decals</span>
+        </div>
+        <div class="dc-sim-caption-divider"></div>
+        <div class="dc-sim-caption-item">
+          <span>Spacing: <strong id="caption-spacing">2" × 4"</strong></span>
+        </div>
+      </div>
+
+    </div><!-- /main -->
+
+  </div><!-- /dc-grid -->
+</div><!-- /dc-container -->
+
 
 <script>
-// Use a namespace to avoid conflicts
+// ============================================================
+// DECAL CALCULATOR — core logic
+// Namespaced under window.dcCalc to avoid conflicts with other
+// scripts on the page.
+// ============================================================
+
 window.dcCalc = {
-    state: { useMargins: true, useRecommendedGap: true },
-    
-    init: function() {
-        const ww = document.getElementById('windowWidth');
-        const wh = document.getElementById('windowHeight');
-        const sx = document.getElementById('spacingX');
-        const sy = document.getElementById('spacingY');
 
-        if(ww) ww.addEventListener('input', () => this.calculate());
-        if(wh) wh.addEventListener('input', () => this.calculate());
-        if(sx) sx.addEventListener('input', () => this.calculate());
-        if(sy) sy.addEventListener('input', () => this.calculate());
+  // ── State ──────────────────────────────────────────────────
+  // Spacing tiers: { spX, spY } in inches.
+  // 'optimal' is the default (matches ABC guidelines).
+  tiers: {
+    starter:  { spX: 12, spY: 12 },
+    enhanced: { spX:  6, spY:  6 },
+    optimal:  { spX:  2, spY:  4 }
+  },
 
-        //this.setupModal();
-        this.calculate();
-    },
+  state: {
+    useMargins:   true,
+    activeTier:   'optimal'   // which tier card is selected
+  },
 
-    setupModal: function() {
-        const modal = document.getElementById('dc-modal');
-        const openBtn = document.getElementById('open-decal-calc');
-        const closeBtn = document.getElementById('close-decal-calc');
+  // ── Init ───────────────────────────────────────────────────
+  init: function() {
+    const ww = document.getElementById('windowWidth');
+    const wh = document.getElementById('windowHeight');
+    if (ww) ww.addEventListener('input', () => this.calculate());
+    if (wh) wh.addEventListener('input', () => this.calculate());
 
-        if (openBtn && modal) {
-            openBtn.onclick = (e) => {
-                e.preventDefault();
-                modal.classList.add('is-visible');
-                document.body.style.overflow = 'hidden';
-                this.calculate();
-            };
-        }
+    // Set initial card highlight to match state.activeTier
+    this.highlightTier(this.state.activeTier);
+    this.calculate();
+  },
 
-        if (closeBtn && modal) {
-            closeBtn.onclick = () => {
-                modal.classList.remove('is-visible');
-                document.body.style.overflow = '';
-            };
-        }
+  // ── Tier selection ─────────────────────────────────────────
+  selectTier: function(tierKey) {
+    if (!this.tiers[tierKey]) return;
+    this.state.activeTier = tierKey;
+    this.highlightTier(tierKey);
+    this.calculate();
+    this.trackTierSelected(tierKey);
+  },
 
-        window.onclick = (e) => {
-            if (e.target === modal) closeBtn.onclick();
-        };
-    },
-
-    calculate: function() {
-    // 1. SELECT ELEMENTS
+  // ── Analytics tracking ─────────────────────────────────────
+  // Two-part approach required by Shopify's Custom Pixel sandbox:
+  //
+  // PART 1 — sessionStorage (theme-side persistence)
+  //   Saves the session so it survives page navigation between the
+  //   product page and checkout. sessionStorage is readable by theme
+  //   JS on any page in the same tab.
+  //
+  // PART 2 — analytics.publish() (pixel-side delivery)
+  //   Shopify Custom Pixels run in a sandboxed iframe with no access
+  //   to the parent page's sessionStorage. The only way to pass data
+  //   into the sandbox is via analytics.publish() called from theme JS.
+  //   We publish on tier selection AND on every page load (see bootstrap
+  //   below) so the pixel always has a fresh copy of the session in memory,
+  //   even on the checkout page where the tier was not selected.
+  trackTierSelected: function(tierKey) {
     const wwInput = document.getElementById('windowWidth');
     const whInput = document.getElementById('windowHeight');
-    if (!wwInput || !whInput) return; // Safety check
+
+    const payload = {
+      tier:          tierKey,
+      window_width:  wwInput ? parseFloat(wwInput.value) || null : null,
+      window_height: whInput ? parseFloat(whInput.value) || null : null,
+      product_id:    window.productConfig.productId,
+      product_title: window.productConfig.productTitle,
+      product_url:   window.productConfig.productUrl,
+      timestamp:     new Date().toISOString()
+    };
+
+    // 1. Persist to sessionStorage for cross-page survival
+    try {
+      sessionStorage.setItem('dcCalcSession', JSON.stringify(payload));
+    } catch (e) {
+      console.warn('dcCalc: could not write to sessionStorage', e);
+    }
+
+    // 2. Publish into the pixel sandbox immediately
+    window.dcCalc.publishToPixel(payload);
+  },
+
+  // Sends payload to the Shopify Custom Pixel sandbox via postMessage.
+  // analytics.publish() is NOT available in the main page JS context —
+  // it only exists inside the pixel's sandboxed iframe. postMessage is
+  // the correct cross-context bridge for theme → pixel communication.
+  publishToPixel: function(payload) {
+    try {
+      window.postMessage({
+        type: 'decal_calculator_tier_selected',
+        data: payload
+      }, '*');
+    } catch (e) {
+      console.warn('dcCalc: postMessage failed', e);
+    }
+  },
+
+  // Applies/removes .is-active on tier cards
+  highlightTier: function(activeTierKey) {
+    ['starter', 'enhanced', 'optimal'].forEach(key => {
+      const card = document.getElementById('tier-' + key);
+      if (card) card.classList.toggle('is-active', key === activeTierKey);
+    });
+  },
+
+  // ── Calculate ──────────────────────────────────────────────
+  calculate: function() {
+
+    // 1. READ INPUTS
+    const wwInput = document.getElementById('windowWidth');
+    const whInput = document.getElementById('windowHeight');
+    if (!wwInput || !whInput) return;
 
     const wwVal = parseFloat(wwInput.value) || 0;
     const whVal = parseFloat(whInput.value) || 0;
-    const dDim = parseFloat(window.productConfig.avgSize) || 1.25;
-    
-    const sx = this.state.useRecommendedGap ? 2 : (parseFloat(document.getElementById('spacingX').value) || 0);
-    const sy = this.state.useRecommendedGap ? 4 : (parseFloat(document.getElementById('spacingY').value) || 0);
+    const dDim  = parseFloat(window.productConfig.avgSize) || 1.25;
 
-    // 2. ICON SYNC (Moved to top so it runs even if math below fails)
-    let drawPath = window.productConfig.path;
-    if (!drawPath || drawPath.trim() === "") {
-        drawPath = window.shapeLibrary[window.productConfig.shape] || window.shapeLibrary.diamond;
+    // 2. SPACING — always driven by the active tier
+    const tier = this.tiers[this.state.activeTier];
+    const sx = tier.spX;
+    const sy = tier.spY;
+
+    // 3. ICON SYNC — update the shape preview in the caption bar below the visualizer
+    // Coerce to string defensively — path can be null, undefined, or an error object
+    // if the metafield is unset or the wrong type. Any non-usable value falls back
+    // to the shape library.
+    let rawPath = window.productConfig.path;
+    let drawPath = (typeof rawPath === 'string') ? rawPath.trim() : '';
+    if (!drawPath) {
+      drawPath = window.shapeLibrary[window.productConfig.shape] || window.shapeLibrary.diamond;
     }
     const iconPath = document.getElementById('shape-icon-path');
     if (iconPath) iconPath.setAttribute('d', drawPath);
 
-    // 3. SMART BUFFER (Margins ON = 2", OFF = 0.5")
+    // 4. MARGINS — 2" border when on, 0.5" minimal buffer when off
     let bufferW = this.state.useMargins ? 2 : 0.5;
     let bufferH = this.state.useMargins ? 2 : 0.5;
 
-    // Prevents breaking on tiny windows
-    if (wwVal < (dDim + (bufferW * 2))) bufferW = 0.25;
-    if (whVal < (dDim + (bufferH * 2))) bufferH = 0.25;
+    // Prevent negative fit on very small windows
+    if (wwVal < (dDim + bufferW * 2)) bufferW = 0.25;
+    if (whVal < (dDim + bufferH * 2)) bufferH = 0.25;
 
-    // 4. CALCULATE FIT
-    const fCols = Math.max(0, Math.floor((wwVal - (bufferW * 2) - dDim) / (dDim + sx)) + 1);
-    const fRows = Math.max(0, Math.floor((whVal - (bufferH * 2) - dDim) / (dDim + sy)) + 1);
+    // 5. FIT CALCULATION
+    const fCols = Math.max(0, Math.floor((wwVal - bufferW * 2 - dDim) / (dDim + sx)) + 1);
+    const fRows = Math.max(0, Math.floor((whVal - bufferH * 2 - dDim) / (dDim + sy)) + 1);
     const count = fCols * fRows;
 
-    // 5. PERFECT CENTERING MATH
-    const totalContentW = (fCols > 0) ? (fCols * dDim) + ((fCols - 1) * sx) : 0;
-    const totalContentH = (fRows > 0) ? (fRows * dDim) + ((fRows - 1) * sy) : 0;
-    
+    // 6. CENTERING OFFSETS for the visualizer
+    const totalContentW = fCols > 0 ? fCols * dDim + (fCols - 1) * sx : 0;
+    const totalContentH = fRows > 0 ? fRows * dDim + (fRows - 1) * sy : 0;
     const startX = (wwVal - totalContentW) / 2;
     const startY = (whVal - totalContentH) / 2;
 
-    // 6. UPDATE UI
-    document.getElementById('result-total').innerText = count;
+    // 7. UPDATE RESULT DISPLAY
+    document.getElementById('result-total').innerText     = count;
     document.getElementById('result-envelopes').innerText = Math.ceil(count / window.productConfig.perEnvelope);
-    document.getElementById('result-cols').innerText = fCols;
-    document.getElementById('result-rows').innerText = fRows;
+    document.getElementById('result-cols').innerText      = fCols;
+    document.getElementById('result-rows').innerText      = fRows;
 
-    // 7. CALL RENDER (Match variables carefully)
+    // 8. UPDATE CAPTION BAR — reflect active spacing values
+    const captionSpacing = document.getElementById('caption-spacing');
+    if (captionSpacing) captionSpacing.innerText = `${sx}" × ${sy}"`;
+
+    // 9. RENDER VISUALIZER
     this.render(fCols, fRows, dDim, sx, sy, startX, startY, wwVal, whVal, drawPath);
-},
 
-    render: function(cols, rows, dW, spX, spY, sX, sY, w, h, path) {
-        // 1. THE SCALE FIX
-        const MAX = 400; 
-        const sc = (w / h > 1 ? MAX : MAX * (w / h)) / w;
-        const svgW = w * sc;
-        const svgH = h * sc;
-        
-        // 2. MULTI-PATH LOGIC
-        // We split by '|'. If there is no '|', the array just has 1 item.
-        const pathArray = path.split('|'); 
-        let shapes = '';
-        let leafCounter = 0;
+  },
 
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                let x = (sX + c * (dW + spX)) * sc;
-                let y = (sY + r * (dW + spY)) * sc;
-                
-                // Cycle through paths in the array
-                let currentPath = pathArray[leafCounter % pathArray.length].trim();
-                
-                shapes += `<g transform="translate(${x},${y}) scale(${(dW * sc) / 100})">
-                            <path d="${currentPath}" fill="#bfdbfe" stroke="#2563eb" stroke-width="2"/>
-                           </g>`;
-                
-                leafCounter++;
-            }
-        }
-      
-        // 3. THE DRAWING
-        const container = document.getElementById('visualizer-container');
-        if (container) {
-          container.innerHTML = `
-            <svg width="100%" height="100%" viewBox="-80 -80 ${svgW + 160} ${svgH + 160}" style="max-height:450px;">
-              <defs>
-                <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
-                  <path d="M0,0 L8,4 L0,8 L2,4 Z" fill="#94a3b8" />
-                </marker>
-              </defs>
-              <rect width="${svgW}" height="${svgH}" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" />
-              
-              <g>${shapes}</g>
-              
-              <line x1="0" y1="-35" x2="${svgW}" y2="-35" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
-              <text x="${svgW / 2}" y="-45" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b">${w}in</text>
-              
-              <line x1="-35" y1="0" x2="-35" y2="${svgH}" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
-              <text x="-45" y="${svgH / 2}" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b" transform="rotate(-90,-45,${svgH / 2})">${h}in</text>
-            </svg>`;
-        }
+  // ── Render SVG visualizer ──────────────────────────────────
+  render: function(cols, rows, dW, spX, spY, sX, sY, w, h, path) {
+
+    // Scale the window dimensions to fit within MAX px
+    const MAX = 400;
+    const sc  = (w / h > 1 ? MAX : MAX * (w / h)) / w;
+    const svgW = w * sc;
+    const svgH = h * sc;
+
+    // Support pipe-separated multi-path strings (alternating decal shapes)
+    const pathArray = path.split('|');
+    let shapes      = '';
+    let leafCounter = 0;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = (sX + c * (dW + spX)) * sc;
+        const y = (sY + r * (dW + spY)) * sc;
+        const currentPath = pathArray[leafCounter % pathArray.length].trim();
+        shapes += `<g transform="translate(${x},${y}) scale(${(dW * sc) / 100})">
+                     <path d="${currentPath}" fill="#bfdbfe" stroke="#2563eb" stroke-width="2"/>
+                   </g>`;
+        leafCounter++;
+      }
     }
+
+    const container = document.getElementById('visualizer-container');
+    if (!container) return;
+
+    container.innerHTML = `
+      <svg width="100%" height="100%" viewBox="-80 -80 ${svgW + 160} ${svgH + 160}" style="max-height:450px;">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 L2,4 Z" fill="#94a3b8" />
+          </marker>
+        </defs>
+        <rect width="${svgW}" height="${svgH}" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" />
+        <g>${shapes}</g>
+        <line x1="0" y1="-35" x2="${svgW}" y2="-35" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
+        <text x="${svgW / 2}" y="-45" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b">${w}in</text>
+        <line x1="-35" y1="0" x2="-35" y2="${svgH}" stroke="#94a3b8" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)" />
+        <text x="-45" y="${svgH / 2}" text-anchor="middle" font-size="16" font-weight="bold" fill="#1e293b" transform="rotate(-90,-45,${svgH / 2})">${h}in</text>
+      </svg>`;
+  }
+
+}; // end window.dcCalc
+
+
+// ── Global helpers called by inline onclick attributes ─────────────────────
+// These must live on window so onclick="..." in the HTML can reach them.
+
+// Toggles the 2" edge margin on/off
+window.dcToggleMargin = function() {
+  window.dcCalc.state.useMargins = !window.dcCalc.state.useMargins;
+  const btn = document.getElementById('btn-margin');
+  if (btn) btn.classList.toggle('off', !window.dcCalc.state.useMargins);
+  document.getElementById('m-status').innerText = window.dcCalc.state.useMargins ? 'ON' : 'OFF';
+  window.dcCalc.calculate();
 };
 
-// Toggle functions outside namespace for HTML onclicks
-window.toggleMargin = function() {
-    window.dcCalc.state.useMargins = !window.dcCalc.state.useMargins;
-    document.getElementById('btn-margin').classList.toggle('off', !window.dcCalc.state.useMargins);
-    document.getElementById('m-status').innerText = window.dcCalc.state.useMargins ? 'ON' : 'OFF';
-    window.dcCalc.calculate();
+// Called by each tier card's onclick
+window.dcSelectTier = function(tierKey) {
+  window.dcCalc.selectTier(tierKey);
 };
 
-window.toggleGapMode = function() {
-    window.dcCalc.state.useRecommendedGap = !window.dcCalc.state.useRecommendedGap;
-    document.getElementById('btn-gap').classList.toggle('off', !window.dcCalc.state.useRecommendedGap);
-    document.getElementById('g-status').innerText = window.dcCalc.state.useRecommendedGap ? 'Recommended' : 'Custom';
-    document.getElementById('custom-gap-fields').classList.toggle('hidden', window.dcCalc.state.useRecommendedGap);
-    window.dcCalc.calculate();
-};
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  window.dcCalc.init();
 
-// Initialize everything when the DOM is ready
-document.addEventListener('DOMContentLoaded', () => window.dcCalc.init());
+  // Re-publish any existing calculator session into the pixel sandbox.
+  // This runs on every page load — including cart and checkout pages —
+  // ensuring the pixel has the session data available when checkout_completed fires,
+  // even though the tier was selected on a different page earlier in the session.
+  // Sessions older than 4 hours are ignored to avoid stale data.
+  try {
+    const raw = sessionStorage.getItem('dcCalcSession');
+    if (raw) {
+      const session = JSON.parse(raw);
+      const ageMs   = Date.now() - new Date(session.timestamp).getTime();
+      const maxAgeMs = 4 * 60 * 60 * 1000; // 4 hours in milliseconds
+
+      if (ageMs < maxAgeMs) {
+        window.dcCalc.publishToPixel(session);
+      } else {
+        // Session too old — discard it
+        sessionStorage.removeItem('dcCalcSession');
+      }
+    }
+  } catch (e) {
+    console.warn('dcCalc: could not republish session on page load', e);
+  }
+});
 </script>
